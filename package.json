@@ -1,0 +1,56 @@
+{
+  "name": "selaren",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Selaren — patient-demand conversion for premium clinics",
+  "scripts": {
+    "dev": "next dev",
+    "build": "prisma generate && next build && node scripts/build-worker.mjs",
+    "build:worker": "node scripts/build-worker.mjs",
+    "start": "next start --hostname 0.0.0.0",
+    "worker": "node dist/worker.js",
+    "worker:dev": "tsx src/worker.ts",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:push": "prisma db push",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:dev": "tsx scripts/dev-db.ts",
+    "db:setup": "prisma migrate deploy && tsx prisma/seed.ts",
+    "db:constraints": "tsx prisma/apply-constraints.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "next lint"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.10.1",
+    "bcryptjs": "^3.0.2",
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0",
+    "jose": "^6.0.11",
+    "next": "^15.3.3",
+    "openai": "^5.8.2",
+    "prisma": "^6.10.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^22.15.30",
+    "@types/react": "^19.1.6",
+    "@types/react-dom": "^19.1.6",
+    "autoprefixer": "^10.4.21",
+    "embedded-postgres": "^18.4.0-beta.17",
+    "esbuild": "^0.25.9",
+    "eslint": "^9.28.0",
+    "eslint-config-next": "^15.3.3",
+    "postcss": "^8.5.4",
+    "tailwindcss": "^3.4.17",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.3"
+  }
+}

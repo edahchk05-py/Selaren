@@ -1,0 +1,15 @@
+# Railway / Nixpacks Node build.
+# esbuild (devDependency) compiles src/worker.ts → dist/worker.js during `npm run build`.
+# Do not set the install command to `npm ci --omit=dev`.
+#
+# Railpack (Railway default) already installs with `--include=dev` then can prune.
+# This file keeps Nixpacks on the same contract: full install at build time.
+
+[variables]
+NPM_CONFIG_PRODUCTION = "false"
+
+[phases.install]
+cmds = ["npm ci"]
+
+[phases.build]
+cmds = ["npm run build"]

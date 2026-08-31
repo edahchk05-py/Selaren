@@ -1,0 +1,25 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies and build output
+node_modules
+.next
+dist
+coverage
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# Patient media and local data
+storage
+storage/media
+data
+logs
+*.log
+*.db
+*.sqlite
+prisma/dev.db
+
+# OS
+.DS_Store

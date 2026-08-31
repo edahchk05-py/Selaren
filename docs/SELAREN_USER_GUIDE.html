@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Selaren — Guide d’utilisation</title>
+  <style>
+    @page { size: A4; margin: 18mm 18mm 20mm; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
+      color: #1c1916;
+      background: #fff;
+      font-size: 11pt;
+      line-height: 1.45;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    h1 { font-size: 26pt; font-weight: 400; letter-spacing: -0.02em; margin: 0 0 8px; }
+    h2 { font-size: 14pt; font-weight: 400; margin: 28px 0 10px; page-break-after: avoid; }
+    h3 { font-size: 12pt; font-weight: 400; margin: 18px 0 8px; }
+    p, li { margin: 0 0 8px; }
+    .kicker { font-family: ui-sans-serif, system-ui, sans-serif; font-size: 9pt; letter-spacing: 0.16em; text-transform: uppercase; color: #8a7350; }
+    .lead { font-size: 13pt; color: #3d3832; }
+    .gold { color: #8a7350; }
+    table { width: 100%; border-collapse: collapse; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 9.5pt; margin: 10px 0 16px; }
+    th, td { border-bottom: 1px solid #e0d8ce; text-align: left; padding: 6px 8px 6px 0; vertical-align: top; }
+    th { color: #8a7350; font-weight: 600; }
+    pre, .flow {
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      font-size: 10pt;
+      background: #f3efe8;
+      padding: 12px 14px;
+      border-radius: 8px;
+      line-height: 1.6;
+    }
+    .cover { margin-bottom: 36px; padding-bottom: 20px; border-bottom: 1px solid #e0d8ce; }
+    .footer { font-family: ui-sans-serif, system-ui, sans-serif; font-size: 8.5pt; color: #6b645c; margin-top: 32px; }
+    ul { padding-left: 18px; }
+  </style>
+</head>
+<body>
+  <div class="cover">
+    <p class="kicker">Selaren</p>
+    <h1>Guide d’utilisation</h1>
+    <p class="lead">Chaque demande devient un rendez-vous.</p>
+    <p class="gold">Pour le fondateur, le propriétaire de clinique, et l’accueil. Produit actuel — pas une feuille de route.</p>
+  </div>
+
+  <h2>1. Qu’est-ce que Selaren ?</h2>
+  <p>Selaren convertit la demande patients des cliniques dentaires privées premium à Casablanca et Marrakech. Les cliniques paient déjà pour attirer des patients. La fuite arrive après : réponse trop lente, oubli, pas de relance, rendez-vous mal tenu, appel manqué jamais repris.</p>
+  <div class="flow">Patient → WhatsApp → Selaren → IA / Accueil → Qualification → Réservation → Acompte (suivi) → Rendez-vous → Présence</div>
+  <p>Ce n’est pas un chatbot, une standardiste IA, un dossier médical, un agenda de praticiens, ni un logiciel de paiement. L’IA aide à répondre plus vite. Le produit, c’est la conversion.</p>
+
+  <h2>2. Les trois rôles</h2>
+  <p>Pas de compte patient. Pas de rôle dentiste dans cette version.</p>
+  <table>
+    <thead><tr><th>Rôle</th><th>Voit</th><th>Fait</th></tr></thead>
+    <tbody>
+      <tr><td>Équipe Selaren</td><td>Toutes les cliniques</td><td>Créer, ouvrir, activer, pause, configurer</td></tr>
+      <tr><td>Propriétaire</td><td>Sa clinique, le pilotage, la config</td><td>Résultats, fiche, équipe, WhatsApp</td></tr>
+      <tr><td>Accueil</td><td>Boîte, agenda, appels manqués</td><td>Répondre, qualifier, réserver, acompte, présence</td></tr>
+    </tbody>
+  </table>
+
+  <h2>3. Embarquer une clinique</h2>
+  <p>L’opérateur crée l’espace. La clinique n’est pas active tant que : identité, valeur de consultation, propriétaire, un traitement, fiche connaissance, horaires, WhatsApp, et modèles (ou pilote 24 h) ne sont pas prêts. Puis « Activer Selaren ».</p>
+  <p>En configuration ou en pause, l’IA n’envoie rien. L’accueil peut répondre.</p>
+
+  <h2>4. WhatsApp</h2>
+  <p>Le patient écrit au numéro de la clinique. Dans les 24 h, Selaren peut répondre en texte. Au-delà, un modèle Meta approuvé est nécessaire. Le jeton est chiffré ; l’accueil ne le voit pas.</p>
+
+  <h2>5. Boîte de réception</h2>
+  <p>Écran principal. Chaque fil : qui, dernier message, traitement, IA ou accueil, s’il faut agir.</p>
+  <p><strong>Prendre la main</strong> arrête l’IA. L’écran affiche « L’accueil a la main ». Répondre prend aussi la main. « Rendre à l’IA » reprend l’assistance, dans les limites de la fiche (pas de prix inventé, pas de diagnostic, pas de créneau fantôme).</p>
+
+  <h2>6. Qualification, agenda, acompte</h2>
+  <p>Qualifié = soin + intention de réserver + peut se présenter. Créneaux libres identiques pour l’IA et l’accueil. Rappels J−1 et 2 h avant. Relances 2 h / 24 h / 72 h / 7 j, jamais entre 21 h et 9 h (Casablanca).</p>
+  <p>L’acompte est <em>noté</em>, jamais encaissé. « Venu / Absent » : l’accueil seulement. Jamais d’absence automatique. Pas d’« Absent » avant l’heure du rendez-vous.</p>
+
+  <h2>7. Appel manqué et nouvelle demande</h2>
+  <p>Numéro → envoyer un WhatsApp. Si le patient a déjà un rendez-vous, aucun message commercial. Nouvelle demande : passage accueil, numéro dicté, Instagram saisi à la main.</p>
+
+  <h2>8. Pilotage</h2>
+  <p>Indicateur principal : <strong>consultations déposées via Selaren</strong>. Entonnoir : Demandes → Qualifiées → Réservées → Acomptes → Présents. Les montants sont une estimation, pas de la comptabilité.</p>
+
+  <h2>9. Ce que vit le patient</h2>
+  <p>Il écrit sur WhatsApp. Il reçoit une réponse, des horaires réels, une confirmation, un rappel. Il n’a jamais de compte Selaren.</p>
+
+  <h2>10. Journées type</h2>
+  <h3>Accueil</h3>
+  <p>Ouvre la boîte. Traite « À reprendre » et les non-lus. Répond, qualifie, réserve. Note les acomptes. Marque les présents. Saisit les appels manqués.</p>
+  <h3>Propriétaire</h3>
+  <p>Lit le Pilotage. Vérifie fiche et horaires. Invite un réceptionniste.</p>
+  <h3>Opérateur Selaren</h3>
+  <p>Voit qui est actif, qui est à 40 %, qui n’a pas WhatsApp. Active quand c’est prêt. Met en pause si besoin. Ne touche pas aux conversations patients sauf pour aider.</p>
+
+  <h2>11. Pilote 14 jours</h2>
+  <p>Configurer → tester sur un numéro Meta → former l’accueil → passer au vrai numéro. Laisser tourner l’application, la base, et le worker. Pause = l’IA se tait.</p>
+
+  <h2>12. Si quelque chose cloche</h2>
+  <table>
+    <thead><tr><th>Vous voyez</th><th>Que faire</th></tr></thead>
+    <tbody>
+      <tr><td>Assistance temporairement indisponible</td><td>L’accueil répond</td></tr>
+      <tr><td>Tarif absent de la fiche</td><td>Accueil répond ; propriétaire complète la fiche</td></tr>
+      <tr><td>Fenêtre WhatsApp fermée</td><td>Modèle Meta, ou attendre que le patient écrive</td></tr>
+      <tr><td>Activation refusée</td><td>Compléter les cercles sur la page Clinique</td></tr>
+      <tr><td>Numéro déjà réservé (appel manqué)</td><td>Normal : pas de relance commerciale</td></tr>
+    </tbody>
+  </table>
+
+  <h2>13. Ce que Selaren ne fait pas</h2>
+  <p>Pas de voix, standard, dossier médical, CNSS, caisse, Instagram connecté, Google Agenda, compte patient, multi-praticiens, ni facturation logicielle.</p>
+
+  <p class="footer">Selaren · Casablanca &amp; Marrakech · Document produit, pas une spécification technique. Branchement Meta : docs/PILOT.md</p>
+</body>
+</html>
