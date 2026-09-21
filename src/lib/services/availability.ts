@@ -5,7 +5,12 @@ import { generateFreeSlots, type FreeSlot } from "../slots";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
-export async function listFreeSlots(clinicId: string, now = new Date(), staffOverrideLead = false): Promise<FreeSlot[]> {
+export async function listFreeSlots(
+  clinicId: string,
+  now = new Date(),
+  staffOverrideLead = false,
+  limit?: number,
+): Promise<FreeSlot[]> {
   const clinic = await prisma.clinic.findUniqueOrThrow({
     where: { id: clinicId },
     include: {
@@ -34,6 +39,7 @@ export async function listFreeSlots(clinicId: string, now = new Date(), staffOve
     })),
     occupied,
     staffOverrideLead,
+    limit,
   });
 }
 

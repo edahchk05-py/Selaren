@@ -1,11 +1,12 @@
 import { execSync, spawn } from "child_process";
-import { mkdirSync, readFileSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
+import { tmpdir } from "os";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import EmbeddedPostgres from "embedded-postgres";
 import { SEND_OUTCOME_UNKNOWN } from "../src/lib/constants";
 
-const PORT = 55433;
+const PORT = 55000 + Math.floor(Math.random() * 5000);
 const DATABASE_URL = `postgresql://selaren:selaren@127.0.0.1:${PORT}/selaren?schema=public`;
 const ENCRYPTION_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -63,12 +64,12 @@ describe("production hardening (postgres)", () => {
   let listFreeSlots: typeof import("../src/lib/services/availability").listFreeSlots;
 
   let staffUserId: string;
+  let pgDir: string;
 
   beforeAll(async () => {
-    const dir = join(process.cwd(), "data", "pg-test");
-    mkdirSync(dir, { recursive: true });
+    pgDir = mkdtempSync(join(tmpdir(), "selaren-pg-test-"));
     pg = new EmbeddedPostgres({
-      databaseDir: dir,
+      databaseDir: pgDir,
       user: "selaren",
       password: "selaren",
       port: PORT,
@@ -111,6 +112,7 @@ describe("production hardening (postgres)", () => {
   afterAll(async () => {
     await prisma?.$disconnect().catch(() => undefined);
     await pg?.stop().catch(() => undefined);
+    if (pgDir) rmSync(pgDir, { recursive: true, force: true });
   }, 30_000);
 
   async function addInquiry(clinicId: string, phoneSuffix: string) {
@@ -335,6 +337,37 @@ describe("production hardening (postgres)", () => {
     expect(messages).toHaveLength(1);
   });
 
+  it("acknowledges a voice note and hands the conversation to staff", async () => {
+    sendSessionText.mockReset();
+    sendSessionText.mockResolvedValue({ messageId: "wamid.media.ack" });
+    const ctx = await seedClinic("444002");
+    await ingestInbound({
+      phoneNumberId: "pn_444002",
+      from: "2126444002",
+      waMessageId: "wamid.audio.1",
+      text: "",
+      mediaType: "audio",
+    });
+    const conversation = await prisma.conversation.findUniqueOrThrow({
+      where: { id: ctx.conversation.id },
+    });
+    expect(conversation.aiHaltReason).toBe("media_only");
+    const ack = await prisma.message.findFirst({
+      where: {
+        conversationId: ctx.conversation.id,
+        direction: "outbound",
+        senderType: "system",
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(ack?.body).toMatch(/message vocal/);
+    expect(ack?.status).toBe("sent");
+    const pendingFollowUps = await prisma.followUp.count({
+      where: { inquiryId: ctx.inquiry.id, sentAt: null, canceledAt: null },
+    });
+    expect(pendingFollowUps).toBe(0);
+  });
+
   it("sends a queued outbound only once under concurrent ticks", async () => {
     sendSessionText.mockClear();
     sendSessionText.mockImplementation(
@@ -355,7 +388,7 @@ describe("production hardening (postgres)", () => {
       },
     });
     await Promise.all([runTick(), runTick()]);
-    expect(sendSessionText).toHaveBeenCalledTimes(1);
+    expect(sendSessionText.mock.calls.filter(([args]) => args.body === "hello")).toHaveLength(1);
     const stored = await prisma.message.findUniqueOrThrow({ where: { id: msg.id } });
     expect(stored.status).toBe("sent");
   });
@@ -482,6 +515,104 @@ describe("production hardening (postgres)", () => {
     });
     expect(outbound).toHaveLength(0);
     expect(sendSessionText).not.toHaveBeenCalled();
+  });
+
+  it("does not offer or create a booking before treatment qualification", async () => {
+    sendSessionText.mockReset();
+    sendSessionText.mockResolvedValue({ messageId: "wamid.qualify.first" });
+    const ctx = await seedClinic("101006");
+    await enableClinicHours(ctx.clinic.id);
+    await prisma.conversation.update({
+      where: { id: ctx.conversation.id },
+      data: { needsAiReply: true, mode: "ai", lastPatientMessageAt: new Date() },
+    });
+    const slot = (await listFreeSlots(ctx.clinic.id))[0]!;
+    openaiCreate.mockResolvedValue(
+      aiJson({
+        classification: "booking",
+        qualification: { intent: "book", can_attend: "yes" },
+        reply: "Voici 09:00, 09:30 ou 10:00.",
+        book_slot_start_iso: slot.startAt.toISOString(),
+      }),
+    );
+
+    await processAiConversation(ctx.conversation.id);
+
+    const appointments = await prisma.appointment.findMany({
+      where: { contactId: ctx.contact.id, status: "scheduled" },
+    });
+    expect(appointments).toHaveLength(0);
+    const reply = await prisma.message.findFirst({
+      where: { conversationId: ctx.conversation.id, direction: "outbound", senderType: "ai" },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(reply?.body).toMatch(/quel traitement/i);
+    expect(reply?.body).not.toMatch(/09:00/);
+  });
+
+  it("routes a new time request for an existing appointment to staff", async () => {
+    sendSessionText.mockReset();
+    sendSessionText.mockResolvedValue({ messageId: "wamid.existing.appt" });
+    const ctx = await seedClinic("101007");
+    await enableClinicHours(ctx.clinic.id);
+    const startAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
+    const appointment = await bookAppointment({
+      clinicId: ctx.clinic.id,
+      inquiryId: ctx.inquiry.id,
+      startAt,
+      endAt: new Date(startAt.getTime() + 30 * 60 * 1000),
+      userId: staffUserId,
+    });
+    await prisma.message.create({
+      data: {
+        clinicId: ctx.clinic.id,
+        conversationId: ctx.conversation.id,
+        direction: "inbound",
+        senderType: "patient",
+        body: "Je veux plutôt 9h",
+        status: "delivered",
+      },
+    });
+    await prisma.conversation.update({
+      where: { id: ctx.conversation.id },
+      data: {
+        needsAiReply: true,
+        mode: "ai",
+        aiHaltReason: null,
+        lastPatientMessageAt: new Date(),
+      },
+    });
+    const alternate = (await listFreeSlots(ctx.clinic.id))[0]!;
+    openaiCreate.mockResolvedValue(
+      aiJson({
+        classification: "reschedule",
+        qualification: {
+          treatment_label: "Implant",
+          intent: "book",
+          can_attend: "yes",
+        },
+        reply: "Je réserve 09:00.",
+        book_slot_start_iso: alternate.startAt.toISOString(),
+      }),
+    );
+
+    await processAiConversation(ctx.conversation.id);
+
+    const appointments = await prisma.appointment.findMany({
+      where: { contactId: ctx.contact.id, status: "scheduled" },
+    });
+    expect(appointments).toHaveLength(1);
+    expect(appointments[0]?.id).toBe(appointment.id);
+    const conversation = await prisma.conversation.findUniqueOrThrow({
+      where: { id: ctx.conversation.id },
+    });
+    expect(conversation.aiHaltReason).toBe("low_confidence");
+    const reply = await prisma.message.findFirst({
+      where: { conversationId: ctx.conversation.id, direction: "outbound", senderType: "ai" },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(reply?.body).toMatch(/déjà un rendez-vous/);
+    expect(reply?.body).toMatch(/modifier ou à l’annuler/);
   });
 
   it("does not send or book after staff takeover during an in-flight AI turn", async () => {

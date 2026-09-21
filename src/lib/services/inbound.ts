@@ -5,8 +5,9 @@ import { decryptSecret } from "../crypto";
 import { downloadWhatsAppMedia } from "../whatsapp/client";
 import { saveClinicMedia } from "../media";
 import { isInsideCustomerCareWindow } from "../window";
+import { mediaHandoffReply } from "../aiPolicy";
 import { cancelPendingStallFollowUps, scheduleNextStallFollowUp } from "./followups";
-import { applyWhatsAppStatus } from "./outbox";
+import { applyWhatsAppStatus, enqueueOutbound } from "./outbox";
 import type { InboundExtract } from "../whatsapp/webhook";
 
 function e164FromWa(from: string): string | null {
@@ -125,10 +126,21 @@ export async function ingestInbound(item: InboundExtract) {
   });
 
   if (mediaOnly) {
+    await cancelPendingStallFollowUps(inquiry.id);
     await prisma.conversation.update({
       where: { id: conversation.id },
       data: { aiHaltReason: "media_only", needsAiReply: false },
     });
+    if (clinic.status === "active" && !contact.waOptOut) {
+      await enqueueOutbound({
+        clinicId: clinic.id,
+        conversationId: conversation.id,
+        inquiryId: inquiry.id,
+        senderType: "system",
+        body: mediaHandoffReply(item.mediaType, contact.language === "ar" ? "darija" : "fr"),
+        rescheduleStall: false,
+      });
+    }
     return { inquiryId: inquiry.id, conversationId: conversation.id, queuedAi: false as const };
   }
 

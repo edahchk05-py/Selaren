@@ -4,6 +4,7 @@ import { prisma } from "../db";
 import { formatSlotLabel } from "../time";
 import { listFreeSlots } from "./availability";
 import { bookAppointment } from "./appointments";
+import { cancelPendingStallFollowUps } from "./followups";
 import { enqueueOutbound } from "./outbox";
 import { persistQualification } from "./inquiries";
 import {
@@ -13,6 +14,13 @@ import {
 } from "../qualification";
 import { isInsideCustomerCareWindow } from "../window";
 import { AI_HALT_REASONS, type AiHaltReason } from "../constants";
+import {
+  existingAppointmentReply,
+  isQualifiedForBooking,
+  qualificationQuestion,
+  replyOffersAppointmentSlots,
+  selectSlotsForAi,
+} from "../aiPolicy";
 
 const AiJson = z.object({
   language: z.enum(["fr", "darija"]).default("fr"),
@@ -98,7 +106,15 @@ export async function processAiConversation(conversationId: string) {
   });
   if (!inquiry) return;
 
-  const slots = await listFreeSlots(conversation.clinicId);
+  const existingAppointment = await prisma.appointment.findFirst({
+    where: { contactId: conversation.contactId, status: "scheduled" },
+    orderBy: { startAt: "asc" },
+  });
+  const latestPatientText =
+    conversation.messages.find((message) => message.senderType === "patient")?.body ?? "";
+  const allSlots = await listFreeSlots(conversation.clinicId, new Date(), false, 1000);
+  const slotSelection = selectSlotsForAi(allSlots, latestPatientText);
+  const slots = slotSelection.slots;
   const slotLines = slots
     .map((s, i) => `${i + 1}. ${formatSlotLabel(s.startAt, s.endAt)} | ISO ${s.startAt.toISOString()}`)
     .join("\n");
@@ -127,13 +143,16 @@ Ne mentionne jamais Selaren. Ne te présente pas comme un agent autonome.
 
 Règles:
 - Une seule réponse courte.
-- Réponds dans la langue du patient (français ou darija). Si mixte, suis le dernier message.
+- Réponds dans la langue du dernier message du patient : français ou darija marocaine naturelle. N'alterne pas entre arabe standard et darija.
+- Une mention des langues de l'accueil dans la fiche ne t'autorise pas à refuser la darija. Continue dans la langue du patient sauf politique explicite contraire.
 - N'invente JAMAIS un prix. Tu ne peux citer que ce qui est dans les notes tarifaires / traitements.
 - Pas de diagnostic, pas d'interprétation de photos/radio, pas d'avis médical.
 - Pas de garantie de résultat, pas de dentiste nommé, pas de CNSS/CNOPS.
 - Ne collecte pas de carte, CIN, ni dossier médical.
-- Propose 1 à 3 créneaux RÉELS ci-dessous. Ne réserve QUE si le patient accepte UN créneau précis encore libre (renvoie book_slot_start_iso).
+- Avant de proposer des horaires ou réserver : le traitement doit être identifié, l'intention doit être book et le patient doit pouvoir venir.
+- Quand la qualification est complète, propose 1 à 3 créneaux RÉELS ci-dessous. Ne réserve QUE si le patient accepte UN créneau précis encore libre (renvoie book_slot_start_iso).
 - Si le patient dit « oui » sans choisir parmi plusieurs créneaux, demande lequel. Ne choisis pas à sa place.
+- Si un rendez-vous existe déjà, ne crée jamais un second rendez-vous. Une nouvelle demande de jour/heure est une demande de modification.
 - Si urgence douleur/gonflement/saignement → halt_reason=medical et dis d'appeler la clinique.
 - Si le patient veut une personne → halt_reason=patient_requests_human.
 - Si colère / menace → halt_reason=angry_or_complaint.
@@ -154,6 +173,10 @@ ${treatments || "(aucun)"}
 
 Créneaux libres (14 jours, heure Casablanca):
 ${slotLines || "(aucun créneau)"}
+Contexte de la demande de créneau: ${slotSelection.requestContext}
+
+Rendez-vous actuel:
+${existingAppointment ? formatSlotLabel(existingAppointment.startAt, existingAppointment.endAt) : "(aucun)"}
 
 Qualification actuelle: ${JSON.stringify(inquiry.qualification)}
 
@@ -220,6 +243,7 @@ Réponds UNIQUEMENT en JSON:
     return;
   }
 
+  let qualificationAfter: QualificationInput | null = inquiry.qualification;
   if (inquiry.qualification && !inquiry.qualification.lockedByStaff && parsed.qualification) {
     const current: QualificationInput = {
       status: inquiry.qualification.status,
@@ -265,6 +289,7 @@ Réponds UNIQUEMENT en JSON:
       { byStaff: false },
     );
     await persistQualification(inquiry.id, conversation.clinicId, next, null);
+    qualificationAfter = next;
   }
 
   if (conversation.contact.language === "unknown" && parsed.language) {
@@ -272,6 +297,59 @@ Réponds UNIQUEMENT en JSON:
       where: { id: conversation.contactId },
       data: { language: parsed.language === "darija" ? "ar" : "fr" },
     });
+  }
+
+  const bookingIntent =
+    Boolean(parsed.book_slot_start_iso) ||
+    ["booking", "reschedule", "cancel"].includes(parsed.classification) ||
+    parsed.qualification?.intent === "book";
+  const requiresQualification =
+    bookingIntent ||
+    (!["admin", "information", "price"].includes(parsed.classification) &&
+      replyOffersAppointmentSlots(parsed.reply));
+
+  if (existingAppointment && bookingIntent) {
+    if (!(await aiTurnStillAllowed(conversationId))) return;
+    await enqueueOutbound({
+      clinicId: conversation.clinicId,
+      conversationId,
+      inquiryId: inquiry.id,
+      senderType: "ai",
+      body: existingAppointmentReply(
+        formatSlotLabel(existingAppointment.startAt, existingAppointment.endAt),
+        parsed.language,
+      ),
+      rescheduleStall: false,
+    });
+    await cancelPendingStallFollowUps(inquiry.id);
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { aiHaltReason: "low_confidence", needsAiReply: false },
+    });
+    return;
+  }
+
+  if (
+    requiresQualification &&
+    (!qualificationAfter || !isQualifiedForBooking(qualificationAfter))
+  ) {
+    if (!(await aiTurnStillAllowed(conversationId))) return;
+    const incomplete =
+      qualificationAfter ??
+      ({
+        treatmentId: null,
+        treatmentLabel: null,
+        intent: "unknown",
+        canAttendClinic: "unknown",
+      } as QualificationInput);
+    await enqueueOutbound({
+      clinicId: conversation.clinicId,
+      conversationId,
+      inquiryId: inquiry.id,
+      senderType: "ai",
+      body: qualificationQuestion(incomplete, parsed.language),
+    });
+    return;
   }
 
   if (parsed.book_slot_start_iso) {
@@ -314,7 +392,10 @@ Réponds UNIQUEMENT en JSON:
         where: { id: conversationId },
         data: { aiHaltReason: "booking_conflict" },
       });
-      const retrySlots = await listFreeSlots(conversation.clinicId);
+      const retrySlots = selectSlotsForAi(
+        await listFreeSlots(conversation.clinicId, new Date(), false, 1000),
+        latestPatientText,
+      ).slots;
       const offer = retrySlots
         .slice(0, 3)
         .map((s) => formatSlotLabel(s.startAt, s.endAt))
