@@ -38,6 +38,30 @@ export async function releaseStaleClaims() {
     where: { sentAt: null, canceledAt: null, claimedAt: { lte: stale } },
     data: { claimedAt: null },
   });
+  // A worker that died mid-turn must not leave the patient without a reply.
+  await prisma.conversation.updateMany({
+    where: { aiClaimedAt: { lte: stale }, mode: "ai", aiHaltReason: null },
+    data: { aiClaimedAt: null, needsAiReply: true },
+  });
+  await prisma.conversation.updateMany({
+    where: { aiClaimedAt: { lte: stale } },
+    data: { aiClaimedAt: null },
+  });
+}
+
+export async function claimAiTurn(conversationId: string): Promise<boolean> {
+  const claimed = await prisma.conversation.updateMany({
+    where: { id: conversationId, needsAiReply: true, mode: "ai", aiClaimedAt: null },
+    data: { needsAiReply: false, aiClaimedAt: new Date() },
+  });
+  return claimed.count === 1;
+}
+
+export async function releaseAiTurn(conversationId: string) {
+  await prisma.conversation.updateMany({
+    where: { id: conversationId },
+    data: { aiClaimedAt: null },
+  });
 }
 
 export async function claimQueuedMessage(messageId: string): Promise<boolean> {

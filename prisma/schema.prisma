@@ -330,6 +330,7 @@ model Conversation {
   status               ConversationStatus @default(open)
   aiHaltReason         String?            @map("ai_halt_reason")
   needsAiReply         Boolean            @default(false) @map("needs_ai_reply")
+  aiClaimedAt          DateTime?          @map("ai_claimed_at")
   lastPatientMessageAt DateTime?          @map("last_patient_message_at")
   lastOutboundAt       DateTime?          @map("last_outbound_at")
   unreadCount          Int                @default(0) @map("unread_count")
@@ -341,6 +342,8 @@ model Conversation {
   messages  Message[]
   inquiries Inquiry[]
 
+  @@index([needsAiReply, updatedAt])
+  @@index([aiClaimedAt])
   @@map("conversations")
 }
 

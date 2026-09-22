@@ -21,6 +21,12 @@ export async function POST(req: NextRequest) {
   const sig = req.headers.get("x-hub-signature-256");
   const secret = process.env.META_APP_SECRET ?? "";
   if (!verifyMetaSignature(raw, sig, secret)) {
+    // Silent 403s here look identical to "Meta never called us", so make the
+    // cause visible in the deployment logs.
+    console.warn("webhook_signature_rejected", {
+      hasSignatureHeader: Boolean(sig),
+      hasAppSecret: secret.length > 0,
+    });
     return new NextResponse("invalid signature", { status: 403 });
   }
 

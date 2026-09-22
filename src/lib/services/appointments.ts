@@ -142,7 +142,8 @@ export async function rescheduleAppointment(args: {
   appointmentId: string;
   startAt: Date;
   endAt: Date;
-  userId: string;
+  userId: string | null;
+  byAi?: boolean;
 }) {
   const old = await prisma.appointment.findUniqueOrThrow({
     where: { id: args.appointmentId },
@@ -206,7 +207,7 @@ export async function rescheduleAppointment(args: {
   await audit({
     clinicId: args.clinicId,
     userId: args.userId,
-    action: "appointment_reschedule",
+    action: args.byAi ? "appointment_reschedule_ai" : "appointment_reschedule",
     entityType: "appointment",
     entityId: created.id,
   });

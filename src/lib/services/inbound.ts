@@ -5,7 +5,7 @@ import { decryptSecret } from "../crypto";
 import { downloadWhatsAppMedia } from "../whatsapp/client";
 import { saveClinicMedia } from "../media";
 import { isInsideCustomerCareWindow } from "../window";
-import { mediaHandoffReply } from "../aiPolicy";
+import { isRecoverableHalt, mediaHandoffReply } from "../aiPolicy";
 import { cancelPendingStallFollowUps, scheduleNextStallFollowUp } from "./followups";
 import { applyWhatsAppStatus, enqueueOutbound } from "./outbox";
 import type { InboundExtract } from "../whatsapp/webhook";
@@ -144,10 +144,23 @@ export async function ingestInbound(item: InboundExtract) {
     return { inquiryId: inquiry.id, conversationId: conversation.id, queuedAi: false as const };
   }
 
+  // A transient halt (provider hiccup, closed window, received media, taken
+  // slot) must not silence the number forever: a new patient message clears it.
+  // Halts that need staff keep the AI quiet, and the patient already received a
+  // handoff message when the halt was set.
+  let haltReason = fresh.aiHaltReason;
+  if (isRecoverableHalt(haltReason)) {
+    await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { aiHaltReason: null },
+    });
+    haltReason = null;
+  }
+
   const mayAi =
     clinic.status === "active" &&
     fresh.mode === "ai" &&
-    !fresh.aiHaltReason &&
+    !haltReason &&
     !contact.waOptOut &&
     isInsideCustomerCareWindow(now);
 

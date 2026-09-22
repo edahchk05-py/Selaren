@@ -30,7 +30,9 @@ vi.mock("openai", () => ({
 }));
 
 let waSeq = 0;
-const sendSessionText = vi.fn(async () => ({ messageId: `wamid.out.${++waSeq}` }));
+const sendSessionText = vi.fn(async (_args: { to: string; body: string }) => ({
+  messageId: `wamid.out.${++waSeq}`,
+}));
 const sendTemplate = vi.fn(async () => ({ messageId: `wamid.tpl.${++waSeq}` }));
 
 vi.mock("../src/lib/whatsapp/client", () => ({
@@ -510,11 +512,115 @@ describe("production hardening (postgres)", () => {
     expect(conv.mode).toBe("ai");
     const appts = await prisma.appointment.findMany({ where: { clinicId: ctx.clinic.id } });
     expect(appts).toHaveLength(0);
+    // The patient is never left in silence: the handoff itself is answered.
     const outbound = await prisma.message.findMany({
       where: { conversationId: ctx.conversation.id, direction: "outbound" },
     });
-    expect(outbound).toHaveLength(0);
-    expect(sendSessionText).not.toHaveBeenCalled();
+    expect(outbound).toHaveLength(1);
+    expect(outbound[0]?.body).toMatch(/Appelez la clinique/);
+  });
+
+  it("keeps a staff-required halt when the patient writes again", async () => {
+    const ctx = await seedClinic("101010");
+    await prisma.conversation.update({
+      where: { id: ctx.conversation.id },
+      data: { mode: "ai", aiHaltReason: "medical", needsAiReply: false },
+    });
+    const result = await ingestInbound({
+      phoneNumberId: "pn_101010",
+      from: "2126101010",
+      waMessageId: "wamid.staff.halt.1",
+      text: "Et pour le prix ?",
+    });
+    expect("queuedAi" in result && result.queuedAi).toBe(false);
+    const conv = await prisma.conversation.findUniqueOrThrow({ where: { id: ctx.conversation.id } });
+    expect(conv.aiHaltReason).toBe("medical");
+    expect(conv.needsAiReply).toBe(false);
+  });
+
+  it("answers again after a transient provider failure halted the conversation", async () => {
+    const ctx = await seedClinic("101011");
+    await prisma.conversation.update({
+      where: { id: ctx.conversation.id },
+      data: { mode: "ai", aiHaltReason: "ai_provider_error", needsAiReply: false },
+    });
+    const result = await ingestInbound({
+      phoneNumberId: "pn_101011",
+      from: "2126101011",
+      waMessageId: "wamid.recover.1",
+      text: "Bonjour, vous êtes là ?",
+    });
+    expect("queuedAi" in result && result.queuedAi).toBe(true);
+    const conv = await prisma.conversation.findUniqueOrThrow({ where: { id: ctx.conversation.id } });
+    expect(conv.aiHaltReason).toBeNull();
+    expect(conv.needsAiReply).toBe(true);
+  });
+
+  it("resumes the AI after a voice note once the patient writes text", async () => {
+    sendSessionText.mockReset();
+    sendSessionText.mockResolvedValue({ messageId: "wamid.media.resume" });
+    const ctx = await seedClinic("101012");
+    await ingestInbound({
+      phoneNumberId: "pn_101012",
+      from: "2126101012",
+      waMessageId: "wamid.audio.resume",
+      text: "",
+      mediaType: "audio",
+    });
+    const halted = await prisma.conversation.findUniqueOrThrow({ where: { id: ctx.conversation.id } });
+    expect(halted.aiHaltReason).toBe("media_only");
+
+    const result = await ingestInbound({
+      phoneNumberId: "pn_101012",
+      from: "2126101012",
+      waMessageId: "wamid.text.resume",
+      text: "Je voulais un devis pour un implant",
+    });
+    expect("queuedAi" in result && result.queuedAi).toBe(true);
+    const resumed = await prisma.conversation.findUniqueOrThrow({ where: { id: ctx.conversation.id } });
+    expect(resumed.aiHaltReason).toBeNull();
+    expect(resumed.needsAiReply).toBe(true);
+  });
+
+  it("requeues an AI turn abandoned by a worker that died mid-reply", async () => {
+    sendSessionText.mockReset();
+    sendSessionText.mockResolvedValue({ messageId: "wamid.stale.ai" });
+    const ctx = await seedClinic("101013");
+    await enableClinicHours(ctx.clinic.id);
+    await prisma.message.create({
+      data: {
+        clinicId: ctx.clinic.id,
+        conversationId: ctx.conversation.id,
+        direction: "inbound",
+        senderType: "patient",
+        body: "Bonjour, je cherche des informations",
+        status: "delivered",
+      },
+    });
+    await prisma.conversation.update({
+      where: { id: ctx.conversation.id },
+      data: {
+        mode: "ai",
+        aiHaltReason: null,
+        needsAiReply: false,
+        aiClaimedAt: new Date(Date.now() - 3 * 60 * 1000),
+        lastPatientMessageAt: new Date(),
+      },
+    });
+    openaiCreate.mockResolvedValue(
+      aiJson({ classification: "greeting", reply: "Bien sûr, que souhaitez-vous savoir ?" }),
+    );
+
+    await runTick();
+
+    const conv = await prisma.conversation.findUniqueOrThrow({ where: { id: ctx.conversation.id } });
+    expect(conv.aiClaimedAt).toBeNull();
+    const reply = await prisma.message.findFirst({
+      where: { conversationId: ctx.conversation.id, direction: "outbound", senderType: "ai" },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(reply?.body).toMatch(/que souhaitez-vous savoir/i);
+    expect(reply?.status).toBe("sent");
   });
 
   it("does not offer or create a booking before treatment qualification", async () => {
@@ -550,10 +656,8 @@ describe("production hardening (postgres)", () => {
     expect(reply?.body).not.toMatch(/09:00/);
   });
 
-  it("routes a new time request for an existing appointment to staff", async () => {
-    sendSessionText.mockReset();
-    sendSessionText.mockResolvedValue({ messageId: "wamid.existing.appt" });
-    const ctx = await seedClinic("101007");
+  async function seedBookedConversation(phoneSuffix: string, patientText: string) {
+    const ctx = await seedClinic(phoneSuffix);
     await enableClinicHours(ctx.clinic.id);
     const startAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
     const appointment = await bookAppointment({
@@ -569,7 +673,7 @@ describe("production hardening (postgres)", () => {
         conversationId: ctx.conversation.id,
         direction: "inbound",
         senderType: "patient",
-        body: "Je veux plutôt 9h",
+        body: patientText,
         status: "delivered",
       },
     });
@@ -579,40 +683,183 @@ describe("production hardening (postgres)", () => {
         needsAiReply: true,
         mode: "ai",
         aiHaltReason: null,
+        aiClaimedAt: null,
         lastPatientMessageAt: new Date(),
       },
     });
+    return { ...ctx, appointment };
+  }
+
+  it("moves the existing appointment instead of creating a second one", async () => {
+    sendSessionText.mockReset();
+    sendSessionText.mockResolvedValue({ messageId: "wamid.reschedule.ai" });
+    const ctx = await seedBookedConversation("101007", "Je veux plutôt un autre horaire");
     const alternate = (await listFreeSlots(ctx.clinic.id))[0]!;
     openaiCreate.mockResolvedValue(
       aiJson({
         classification: "reschedule",
-        qualification: {
-          treatment_label: "Implant",
-          intent: "book",
-          can_attend: "yes",
-        },
-        reply: "Je réserve 09:00.",
-        book_slot_start_iso: alternate.startAt.toISOString(),
+        qualification: { treatment_label: "Implant", intent: "book", can_attend: "yes" },
+        reply: "C’est noté, je décale votre rendez-vous.",
+        reschedule_slot_start_iso: alternate.startAt.toISOString(),
       }),
     );
 
     await processAiConversation(ctx.conversation.id);
 
-    const appointments = await prisma.appointment.findMany({
+    const scheduled = await prisma.appointment.findMany({
       where: { contactId: ctx.contact.id, status: "scheduled" },
     });
-    expect(appointments).toHaveLength(1);
-    expect(appointments[0]?.id).toBe(appointment.id);
-    const conversation = await prisma.conversation.findUniqueOrThrow({
-      where: { id: ctx.conversation.id },
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0]?.id).not.toBe(ctx.appointment.id);
+    expect(scheduled[0]?.startAt.toISOString()).toBe(alternate.startAt.toISOString());
+    const previous = await prisma.appointment.findUniqueOrThrow({ where: { id: ctx.appointment.id } });
+    expect(previous.status).toBe("rescheduled");
+    expect(previous.supersededByAppointmentId).toBe(scheduled[0]?.id);
+    const confirmation = await prisma.message.findFirst({
+      where: { conversationId: ctx.conversation.id, templateName: "appointment_confirmation" },
+      orderBy: { createdAt: "desc" },
     });
-    expect(conversation.aiHaltReason).toBe("low_confidence");
+    expect(confirmation?.status).toBe("sent");
+  });
+
+  it("offers alternatives when the requested new time is not free", async () => {
+    sendSessionText.mockReset();
+    sendSessionText.mockResolvedValue({ messageId: "wamid.reschedule.conflict" });
+    const ctx = await seedBookedConversation("101008", "Je veux plutôt mardi");
+    openaiCreate.mockResolvedValue(
+      aiJson({
+        classification: "reschedule",
+        qualification: { treatment_label: "Implant", intent: "book", can_attend: "yes" },
+        reply: "Je décale votre rendez-vous.",
+        reschedule_slot_start_iso: new Date(Date.now() + 9 * 60 * 1000).toISOString(),
+      }),
+    );
+
+    await processAiConversation(ctx.conversation.id);
+
+    const scheduled = await prisma.appointment.findMany({
+      where: { contactId: ctx.contact.id, status: "scheduled" },
+    });
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0]?.id).toBe(ctx.appointment.id);
     const reply = await prisma.message.findFirst({
       where: { conversationId: ctx.conversation.id, direction: "outbound", senderType: "ai" },
       orderBy: { createdAt: "desc" },
     });
-    expect(reply?.body).toMatch(/déjà un rendez-vous/);
-    expect(reply?.body).toMatch(/modifier ou à l’annuler/);
+    expect(reply?.body).toMatch(/plus disponible|vient d’être pris/);
+  });
+
+  it("leaves a cancellation request to staff without cancelling", async () => {
+    sendSessionText.mockReset();
+    sendSessionText.mockResolvedValue({ messageId: "wamid.cancel.handoff" });
+    const ctx = await seedBookedConversation("101009", "Je veux annuler mon rendez-vous");
+    openaiCreate.mockResolvedValue(
+      aiJson({
+        classification: "cancel",
+        qualification: { treatment_label: "Implant", intent: "book", can_attend: "yes" },
+        reply: "Je transmets votre demande.",
+      }),
+    );
+
+    await processAiConversation(ctx.conversation.id);
+
+    const scheduled = await prisma.appointment.findMany({
+      where: { contactId: ctx.contact.id, status: "scheduled" },
+    });
+    expect(scheduled).toHaveLength(1);
+    const conv = await prisma.conversation.findUniqueOrThrow({ where: { id: ctx.conversation.id } });
+    expect(conv.aiHaltReason).toBe("low_confidence");
+    const reply = await prisma.message.findFirst({
+      where: { conversationId: ctx.conversation.id, direction: "outbound", senderType: "ai" },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(reply?.body).toMatch(/annulation/i);
+  });
+
+  it("repairs a non-compliant reply instead of sending a canned sentence", async () => {
+    sendSessionText.mockReset();
+    sendSessionText.mockResolvedValue({ messageId: "wamid.repair" });
+    const ctx = await seedClinic("101014");
+    await enableClinicHours(ctx.clinic.id);
+    await prisma.message.create({
+      data: {
+        clinicId: ctx.clinic.id,
+        conversationId: ctx.conversation.id,
+        direction: "inbound",
+        senderType: "patient",
+        body: "Bonjour, je veux un rendez-vous",
+        status: "delivered",
+      },
+    });
+    await prisma.conversation.update({
+      where: { id: ctx.conversation.id },
+      data: { needsAiReply: true, mode: "ai", lastPatientMessageAt: new Date() },
+    });
+    openaiCreate
+      .mockResolvedValueOnce(
+        aiJson({
+          classification: "booking",
+          qualification: { intent: "book", can_attend: "yes" },
+          reply: "Nous avons lundi à 09:00 ou mardi à 10:00.",
+        }),
+      )
+      .mockResolvedValueOnce(
+        aiJson({
+          classification: "booking",
+          qualification: { intent: "book", can_attend: "yes" },
+          reply: "Avec plaisir. Pour quel soin souhaitez-vous venir ?",
+        }),
+      );
+
+    await processAiConversation(ctx.conversation.id);
+
+    expect(openaiCreate).toHaveBeenCalledTimes(2);
+    const reply = await prisma.message.findFirst({
+      where: { conversationId: ctx.conversation.id, direction: "outbound", senderType: "ai" },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(reply?.body).toBe("Avec plaisir. Pour quel soin souhaitez-vous venir ?");
+    expect(reply?.body).not.toMatch(/09:00/);
+  });
+
+  it("answers in darija when the patient writes in arabic script", async () => {
+    sendSessionText.mockReset();
+    sendSessionText.mockResolvedValue({ messageId: "wamid.darija" });
+    const ctx = await seedClinic("101015");
+    await enableClinicHours(ctx.clinic.id);
+    await prisma.message.create({
+      data: {
+        clinicId: ctx.clinic.id,
+        conversationId: ctx.conversation.id,
+        direction: "inbound",
+        senderType: "patient",
+        body: "سلام، بغيت نحجز موعد",
+        status: "delivered",
+      },
+    });
+    await prisma.conversation.update({
+      where: { id: ctx.conversation.id },
+      data: { needsAiReply: true, mode: "ai", lastPatientMessageAt: new Date() },
+    });
+    // Both attempts answer in French, so the deterministic darija fallback applies.
+    openaiCreate.mockResolvedValue(
+      aiJson({
+        language: "fr",
+        classification: "booking",
+        qualification: { intent: "book", can_attend: "yes" },
+        reply: "Bonjour, souhaitez-vous une consultation ?",
+      }),
+    );
+
+    await processAiConversation(ctx.conversation.id);
+
+    const reply = await prisma.message.findFirst({
+      where: { conversationId: ctx.conversation.id, direction: "outbound", senderType: "ai" },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(reply?.body).toMatch(/[\u0600-\u06FF]/);
+    const contact = await prisma.contact.findUniqueOrThrow({ where: { id: ctx.contact.id } });
+    expect(contact.language).toBe("ar");
   });
 
   it("does not send or book after staff takeover during an in-flight AI turn", async () => {

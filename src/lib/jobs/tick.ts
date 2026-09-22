@@ -27,11 +27,15 @@ async function flushOutbox() {
 }
 
 async function processAiQueue() {
-  const conv = await prisma.conversation.findFirst({
-    where: { needsAiReply: true, mode: "ai" },
+  const pending = await prisma.conversation.findMany({
+    where: { needsAiReply: true, mode: "ai", aiClaimedAt: null },
     orderBy: { updatedAt: "asc" },
+    select: { id: true },
+    take: 5,
   });
-  if (conv) await processAiConversation(conv.id);
+  for (const conv of pending) {
+    await processAiConversation(conv.id);
+  }
 }
 
 async function sendDueFollowUps() {
